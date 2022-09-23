@@ -162,17 +162,17 @@ class KPConv(nn.Module):
         super(KPConv, self).__init__()
 
         # Save parameters
-        self.K = kernel_size
-        self.p_dim = p_dim
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.radius = radius
-        self.KP_extent = KP_extent
-        self.fixed_kernel_points = fixed_kernel_points
-        self.KP_influence = KP_influence
-        self.aggregation_mode = aggregation_mode
-        self.deformable = deformable
-        self.modulated = modulated
+        self.K = kernel_size                        # 15
+        self.p_dim = p_dim                          # 3
+        self.in_channels = in_channels              # 1
+        self.out_channels = out_channels            # 32
+        self.radius = radius                        # 0.05
+        self.KP_extent = KP_extent                  # 0.024
+        self.fixed_kernel_points = fixed_kernel_points # 'center'
+        self.KP_influence = KP_influence            # 'linear'
+        self.aggregation_mode = aggregation_mode    # 'sum'
+        self.deformable = deformable                # False
+        self.modulated = modulated                  # True
 
         # Running variable containing deformed KP distance to input points. (used in regularization loss)
         self.min_d2 = None
@@ -273,28 +273,29 @@ class KPConv(nn.Module):
         # Deformed convolution
         ######################
 
-        # Add a fake point in the last row for shadow neighbors
+        # Add a fake point in the last row for shadow neighbors (s_pts)
         s_pts = torch.cat((s_pts, torch.zeros_like(s_pts[:1, :]) + 1e6), 0)
 
         # Get neighbor points [n_points, n_neighbors, dim]
-        neighbors = s_pts[neighb_inds, :]
+        neighbors = s_pts[neighb_inds, :]                               # [71349, 22, 3] each of the 71349 points has 22 neighbors with coordinates
 
         # Center every neighborhood
-        neighbors = neighbors - q_pts.unsqueeze(1)
+        neighbors = neighbors - q_pts.unsqueeze(1)                      # [71349, 22, 3] = [71349, 22, 3] - [71349, 1, 3], convert o local coordinate system, subtract x,y,z
 
         # Apply offsets to kernel points [n_points, n_kpoints, dim]
         if self.deformable:
             self.deformed_KP = offsets + self.kernel_points
             deformed_K_points = self.deformed_KP.unsqueeze(1)
         else:
-            deformed_K_points = self.kernel_points
+            deformed_K_points = self.kernel_points                      # [15, 3] get kernel points
 
         # Get all difference matrices [n_points, n_neighbors, n_kpoints, dim]
-        neighbors.unsqueeze_(2)
-        differences = neighbors - deformed_K_points
-
-        # Get the square distances [n_points, n_neighbors, n_kpoints]
-        sq_distances = torch.sum(differences ** 2, dim=3)
+        neighbors.unsqueeze_(2)                                         # [71349, 22,  1, 3]
+        differences = neighbors - deformed_K_points                     # [71349, 22, 15, 3] = [71349, 22,  1, 3] - [15, 3]             broadcasts to 
+                                                                        #                      [71349, 22,  1, 3] - [71349, 22, 15, 3]
+                                                                        #                      subtracts from all neighbors the 15 kernel coordinates
+        # Get the square distances [n_points, n_neighbors, n_kpoints]   # computes square distances between neighbors and kernel points, later it will be sqrt()
+        sq_distances = torch.sum(differences ** 2, dim=3)               # [71349, 22, 15]
 
         # Optimization by ignoring points outside a deformed KP range
         if self.deformable:
@@ -333,8 +334,8 @@ class KPConv(nn.Module):
 
         elif self.KP_influence == 'linear':
             # Influence decrease linearly with the distance, and get to zero when d = KP_extent.
-            all_weights = torch.clamp(1 - torch.sqrt(sq_distances) / self.KP_extent, min=0.0)
-            all_weights = torch.transpose(all_weights, 1, 2)
+            all_weights = torch.clamp(1 - torch.sqrt(sq_distances) / self.KP_extent, min=0.0)   # [71349, 22, 15], torch.sqrt(sq_distances) is Euclidean distances
+            all_weights = torch.transpose(all_weights, 1, 2)                                    # [71349, 15, 22]
 
         elif self.KP_influence == 'gaussian':
             # Influence in gaussian of the distance.
@@ -353,24 +354,24 @@ class KPConv(nn.Module):
             raise ValueError("Unknown convolution mode. Should be 'closest' or 'sum'")
 
         # Add a zero feature for shadow neighbors
-        x = torch.cat((x, torch.zeros_like(x[:1, :])), 0)
+        x = torch.cat((x, torch.zeros_like(x[:1, :])), 0)               # [71349, 1]
 
         # Get the features of each neighborhood [n_points, n_neighbors, in_fdim]
-        neighb_x = gather(x, new_neighb_inds)
+        neighb_x = gather(x, new_neighb_inds)                           # [71349, 22, 1]           
 
         # Apply distance weights [n_points, n_kpoints, in_fdim]
-        weighted_features = torch.matmul(all_weights, neighb_x)
-
+        weighted_features = torch.matmul(all_weights, neighb_x)         # [71349, 15, 1] = [71349, 15, 22] * [71349, 22, 1]
+                                                                        # dot product of features with the weights from kernel point distances
         # Apply modulations
         if self.deformable and self.modulated:
             weighted_features *= modulations.unsqueeze(2)
 
         # Apply network weights [n_kpoints, n_points, out_fdim]
-        weighted_features = weighted_features.permute((1, 0, 2))
-        kernel_outputs = torch.matmul(weighted_features, self.weights)
-
+        weighted_features = weighted_features.permute((1, 0, 2))        # [15, 71349, 1]
+        kernel_outputs = torch.matmul(weighted_features, self.weights)  # [15, 71349, 32] = [15, 71349, 1 * [15, 1, 32]
+                                                                        # dot product of features with model weights (learnable weights, torch.nn.Parameter)
         # Convolution sum [n_points, out_fdim]
-        return torch.sum(kernel_outputs, dim=0)
+        return torch.sum(kernel_outputs, dim=0)                         # [71349, 32]
 
     def __repr__(self):
         return 'KPConv(radius: {:.2f}, in_feat: {:d}, out_feat: {:d})'.format(self.radius,
@@ -552,12 +553,12 @@ class SimpleBlock(nn.Module):
             s_pts = batch.points[self.layer_ind]
             neighb_inds = batch.pools[self.layer_ind]
         else:
-            q_pts = batch.points[self.layer_ind]
-            s_pts = batch.points[self.layer_ind]
-            neighb_inds = batch.neighbors[self.layer_ind]
+            q_pts = batch.points[self.layer_ind]            # [71349, 3]
+            s_pts = batch.points[self.layer_ind]            # [71349, 3]
+            neighb_inds = batch.neighbors[self.layer_ind]   # [71349, 22]
 
-        x = self.KPConv(q_pts, s_pts, neighb_inds, x)
-        return self.leaky_relu(self.batch_norm(x))
+        x = self.KPConv(q_pts, s_pts, neighb_inds, x)       # [71349, 32]
+        return self.leaky_relu(self.batch_norm(x))          # [71349, 32]
 
 
 class ResnetBottleneckBlock(nn.Module):
@@ -629,10 +630,10 @@ class ResnetBottleneckBlock(nn.Module):
             neighb_inds = batch.neighbors[self.layer_ind]
 
         # First downscaling mlp
-        x = self.unary1(features)
+        x = self.unary1(features)                       # [67882, 16]
 
         # Convolution
-        x = self.KPConv(q_pts, s_pts, neighb_inds, x)
+        x = self.KPConv(q_pts, s_pts, neighb_inds, x)   # [32060, 16]
         x = self.leaky_relu(self.batch_norm_conv(x))
 
         # Second upscaling mlp
@@ -645,7 +646,7 @@ class ResnetBottleneckBlock(nn.Module):
             shortcut = features
         shortcut = self.unary_shortcut(shortcut)
 
-        return self.leaky_relu(x + shortcut)
+        return self.leaky_relu(x + shortcut)            # [32060, 64]
 
 
 class GlobalAverageBlock(nn.Module):
@@ -657,8 +658,8 @@ class GlobalAverageBlock(nn.Module):
         super(GlobalAverageBlock, self).__init__()
         return
 
-    def forward(self, x, batch):
-        return global_average(x, batch.lengths[-1])
+    def forward(self, x, batch):                        # [506, 1024]
+        return global_average(x, batch.lengths[-1])     # batch.lengths[-1] = [45, 14, 80, 96, 15, 70, 46, 45, 63, 32] list of batch lengths
 
 
 class NearestUpsampleBlock(nn.Module):

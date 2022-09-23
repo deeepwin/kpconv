@@ -184,10 +184,10 @@ class ModelTrainer:
                 # zero the parameter gradients
                 self.optimizer.zero_grad()
 
-                # Forward pass
-                outputs = net(batch, config)
-                loss = net.loss(outputs, batch.labels)
-                acc = net.accuracy(outputs, batch.labels)
+                # Forward pass through KPConv
+                outputs = net(batch, config)                # [10, 40]
+                loss = net.loss(outputs, batch.labels)      # batch.labels = [10] for each thread a label, batch_size=1, decimal value as loss 3.6139, 
+                acc = net.accuracy(outputs, batch.labels)   # decimal value as accuracy 0.1
 
                 t += [time.time()]
 

@@ -136,15 +136,15 @@ class KPCNN(nn.Module):
     def forward(self, batch, config):
 
         # Save all block operations in a list of modules
-        x = batch.features.clone().detach()
+        x = batch.features.clone().detach() # [70039, 1]
 
         # Loop over consecutive blocks
-        for block_op in self.block_ops:
+        for block_op in self.block_ops:     # number of layers is 15
             x = block_op(x, batch)
 
-        # Head of network
-        x = self.head_mlp(x, batch)
-        x = self.head_softmax(x, batch)
+        # Head of network                   # last block was a batch global average, reducing x to [10, 1024] first dimension is number of input data threads
+        x = self.head_mlp(x, batch)         # [10, 1024]
+        x = self.head_softmax(x, batch)     # [10, 40] we have 40 classes for 10 threads
 
         return x
 
